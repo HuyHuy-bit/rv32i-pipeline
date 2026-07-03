@@ -1,5 +1,4 @@
 // cpu.sv - top-level module: 5-stage pipelined RV32I CPU.
-
 module cpu (
     input  logic clk,
     input  logic rst,
@@ -17,29 +16,28 @@ module cpu (
     assign pc_plus4_if = pc_out + 32'd4;
 
     instr_mem u_instr_mem ( .addr(pc_out), .instr(instr_if) );
+
     // control-flow resolution comes from EX (see below) - drives both the
     // next-fetch PC and the flush signals for IF/ID + ID/EX.
     logic        ex_flush;
     logic [31:0] ex_resolved_target;
+    logic        load_use_stall; // driven by hazard_detect, declared below EX section
 
-    assign next_pc = ex_flush ? ex_resolved_target : pc_plus4_if;
+    assign next_pc = ex_flush          ? ex_resolved_target
+                    : load_use_stall   ? pc_out            // hold: re-fetch same address
+                    : pc_plus4_if;
 
-    
     // IF/ID register
     logic [31:0] pc_id, pc_plus4_id, instr_id;
-    logic        stall_id; // wired up in Step 3 (hazard unit); tied off for now
-
-    assign stall_id = 1'b0;
 
     if_id_reg u_if_id (
         .clk(clk), .rst(rst),
         .flush(ex_flush),
-        .stall(stall_id),
+        .stall(load_use_stall),
         .pc_in(pc_out), .pc_plus4_in(pc_plus4_if), .instr_in(instr_if),
         .pc_out(pc_id), .pc_plus4_out(pc_plus4_id), .instr_out(instr_id)
     );
 
-    
     // ID stage
     logic [6:0] opcode_id, funct7_id;
     logic [2:0] funct3_id;
@@ -78,7 +76,6 @@ module cpu (
     logic [31:0] imm_id;
     imm_gen u_imm_gen ( .instr(instr_id), .imm(imm_id) );
 
-    
     // ID/EX register
     logic [31:0] pc_ex, pc_plus4_ex, rs1_data_ex, rs2_data_ex, imm_ex;
     logic [4:0]  rs1_addr_ex, rs2_addr_ex, rd_addr_ex;
@@ -89,8 +86,13 @@ module cpu (
 
     // A taken branch/jump resolves in EX one cycle before this register would
     // otherwise latch the two wrong-path instructions behind it - flush next cycle.
+    // A load-use hazard inserts a bubble here too, while IF/ID holds so the
+    // stalled instruction re-decodes correctly next cycle.
+    logic id_ex_flush;
+    assign id_ex_flush = ex_flush || load_use_stall;
+
     id_ex_reg u_id_ex (
-        .clk(clk), .rst(rst), .flush(ex_flush),
+        .clk(clk), .rst(rst), .flush(id_ex_flush),
         .pc_in(pc_id), .pc_plus4_in(pc_plus4_id),
         .rs1_data_in(reg_rs1_data_id), .rs2_data_in(reg_rs2_data_id), .imm_in(imm_id),
         .rs1_addr_in(rs1_addr_id), .rs2_addr_in(rs2_addr_id), .rd_addr_in(rd_addr_id),
@@ -108,7 +110,15 @@ module cpu (
         .branch_out(branch_ex), .pc_src_out(pc_src_ex), .wb_src_out(wb_src_ex)
     );
 
-    
+    // Hazard detection (load-use)
+    // Checks the instruction now sitting in EX (via the ID/EX register's
+    // own outputs) against the instruction currently being decoded in ID.
+    hazard_detect u_hazard_detect (
+        .mem_read_ex(mem_read_ex), .rd_addr_ex(rd_addr_ex),
+        .rs1_addr_id(rs1_addr_id), .rs2_addr_id(rs2_addr_id),
+        .stall(load_use_stall)
+    );
+
     // EX stage
     // Forwarding: pick rs1/rs2 from EX/MEM or MEM/WB instead of the raw
     // ID/EX-registered value whenever a not-yet-retired instruction ahead
@@ -164,7 +174,6 @@ module cpu (
         endcase
     end
 
-    
     // EX/MEM register
     logic [31:0] alu_result_mem, rs2_data_mem, pc_plus4_mem;
     logic [4:0]  rd_addr_mem;
@@ -185,7 +194,6 @@ module cpu (
         .wb_src_out(wb_src_mem)
     );
 
-    
     // MEM stage
     logic [31:0] mem_read_data_mem;
     data_mem u_data_mem (
@@ -195,7 +203,6 @@ module cpu (
         .read_data(mem_read_data_mem)
     );
 
-    
     // MEM/WB register
     logic [31:0] mem_read_data_wb, alu_result_wb, pc_plus4_wb;
     logic [4:0]  rd_addr_wb;
@@ -213,7 +220,6 @@ module cpu (
         .reg_write_en_out(reg_write_en_wb), .wb_src_out(wb_src_wb)
     );
 
-    
     // WB stage
     always_comb begin
         case (wb_src_wb)

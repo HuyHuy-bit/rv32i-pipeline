@@ -6,13 +6,13 @@ CPU_SRCS = rtl/cpu.sv rtl/pc.sv rtl/instr_mem.sv rtl/reg_file.sv rtl/imm_gen.sv 
            rtl/alu.sv rtl/control.sv rtl/data_mem.sv rtl/branch_unit.sv \
            rtl/if_id_reg.sv rtl/id_ex_reg.sv rtl/ex_mem_reg.sv rtl/mem_wb_reg.sv \
            rtl/forwarding_unit.sv rtl/hazard_detect.sv
-		   
+
 VFLAGS   = --cc --exe --build --trace -j 0 -Wno-UNUSEDSIGNAL
 OBJDIR   = obj_dir
 SIM      = $(OBJDIR)/V$(TOP)
 ASM      = python3 tools/asm.py
 
-TESTS    = t01_rtype t02_itype t03_memory t04_branch t05_jump t06_lui_auipc
+TESTS    = t01_rtype t02_itype t03_memory t04_branch t05_jump t06_lui_auipc t07_load_use
 HEXFILES = $(patsubst %,tests/%.hex,$(TESTS))
 
 .PHONY: all sim assemble test lint wave clean
