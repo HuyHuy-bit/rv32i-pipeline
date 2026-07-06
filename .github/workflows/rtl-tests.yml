@@ -1,0 +1,26 @@
+name: RTL Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Install Verilator
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y verilator
+
+      - name: Verilator version
+        run: verilator --version
+
+      - name: Lint
+        run: make lint
+
+      - name: Run full test suite
+        run: make all
