@@ -13,6 +13,7 @@ module ex_mem_reg (
     input  logic        mem_write_in,
     input  logic        mem_read_in,
     input  logic [1:0]  wb_src_in,
+    input  logic        valid_in,
 
     output logic [31:0] alu_result_out,
     output logic [31:0] rs2_data_out,
@@ -23,7 +24,8 @@ module ex_mem_reg (
     output logic        reg_write_en_out,
     output logic        mem_write_out,
     output logic        mem_read_out,
-    output logic [1:0]  wb_src_out
+    output logic [1:0]  wb_src_out,
+    output logic        valid_out
 );
     always_ff @(posedge clk) begin
         if (rst) begin
@@ -36,6 +38,7 @@ module ex_mem_reg (
             mem_write_out    <= 1'b0;
             mem_read_out     <= 1'b0;
             wb_src_out       <= 2'b00;
+            valid_out        <= 1'b0;
         end else begin
             alu_result_out   <= alu_result_in;
             rs2_data_out     <= rs2_data_in;
@@ -46,6 +49,7 @@ module ex_mem_reg (
             mem_write_out    <= mem_write_in;
             mem_read_out     <= mem_read_in;
             wb_src_out       <= wb_src_in;
+            valid_out        <= valid_in;
         end
     end
 endmodule

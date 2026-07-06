@@ -106,5 +106,19 @@ int main(int argc, char** argv) {
                   << "  exp=0x" << exp << std::dec << "\n";
     }
     std::cout << (ok ? "PASS\n" : "FAIL\n");
+
+    // Performance summary (cycle-count / instret / stall / flush counters,
+    // added in response to project-review feedback).
+    uint32_t cyc     = top->perf_cycle_count;
+    uint32_t instret = top->perf_instr_retired;
+    uint32_t stalls   = top->perf_stall_count;
+    uint32_t flushes  = top->perf_flush_count;
+    double   cpi      = instret ? (double)cyc / (double)instret : 0.0;
+    std::cout << "  perf: cycles=" << cyc
+              << " instret=" << instret
+              << " stalls=" << stalls
+              << " flushes=" << flushes
+              << " CPI=" << cpi << "\n";
+
     return ok ? 0 : 1;
 }

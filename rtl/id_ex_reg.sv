@@ -25,6 +25,7 @@ module id_ex_reg (
     input  logic        branch_in,
     input  logic [1:0]  pc_src_in,
     input  logic [1:0]  wb_src_in,
+    input  logic        valid_in,
 
     // outputs into EX
     output logic [31:0] pc_out,
@@ -45,7 +46,8 @@ module id_ex_reg (
     output logic        mem_read_out,
     output logic        branch_out,
     output logic [1:0]  pc_src_out,
-    output logic [1:0]  wb_src_out
+    output logic [1:0]  wb_src_out,
+    output logic        valid_out
 );
     always_ff @(posedge clk) begin
         if (rst || flush) begin
@@ -68,6 +70,7 @@ module id_ex_reg (
             branch_out       <= 1'b0;
             pc_src_out       <= 2'b00;
             wb_src_out       <= 2'b00;
+            valid_out        <= 1'b0;
         end else begin
             pc_out           <= pc_in;
             pc_plus4_out     <= pc_plus4_in;
@@ -87,6 +90,7 @@ module id_ex_reg (
             branch_out       <= branch_in;
             pc_src_out       <= pc_src_in;
             wb_src_out       <= wb_src_in;
+            valid_out        <= valid_in;
         end
     end
 endmodule

@@ -1,12 +1,15 @@
 // cpu.sv - top-level module: 5-stage pipelined RV32I CPU.
+
 module cpu (
     input  logic clk,
     input  logic rst,
-    output logic [31:0] dbg_x1,
-    output logic [31:0] dbg_x2,
-    output logic [31:0] dbg_x3,
-    output logic [31:0] dbg_x4,
-    output logic [31:0] dbg_x5
+
+    // Performance counters (Section 16 "easy wins": cycle-count / instret /
+    // stall counters -> a CPI summary the testbench prints at the end).
+    output logic [31:0] perf_cycle_count,
+    output logic [31:0] perf_instr_retired,
+    output logic [31:0] perf_stall_count,
+    output logic [31:0] perf_flush_count
 );
 
     // IF stage
@@ -29,13 +32,15 @@ module cpu (
 
     // IF/ID register
     logic [31:0] pc_id, pc_plus4_id, instr_id;
+    logic        valid_id;
 
     if_id_reg u_if_id (
         .clk(clk), .rst(rst),
         .flush(ex_flush),
         .stall(load_use_stall),
         .pc_in(pc_out), .pc_plus4_in(pc_plus4_if), .instr_in(instr_if),
-        .pc_out(pc_id), .pc_plus4_out(pc_plus4_id), .instr_out(instr_id)
+        .pc_out(pc_id), .pc_plus4_out(pc_plus4_id), .instr_out(instr_id),
+        .valid_out(valid_id)
     );
 
     // ID stage
@@ -68,9 +73,7 @@ module cpu (
         .clk(clk), .rst(rst),
         .rs1_addr(rs1_addr_id), .rs2_addr(rs2_addr_id), .rd_addr(rd_addr_wb),
         .rd_data(write_back_data), .rd_write_en(reg_write_en_wb),
-        .rs1_data(reg_rs1_data_id), .rs2_data(reg_rs2_data_id),
-        .dbg_x1(dbg_x1), .dbg_x2(dbg_x2), .dbg_x3(dbg_x3),
-        .dbg_x4(dbg_x4), .dbg_x5(dbg_x5)
+        .rs1_data(reg_rs1_data_id), .rs2_data(reg_rs2_data_id)
     );
 
     logic [31:0] imm_id;
@@ -83,6 +86,7 @@ module cpu (
     logic        reg_write_en_ex, alu_src_ex, alu_a_src_ex, mem_write_ex, mem_read_ex, branch_ex;
     logic [3:0]  alu_op_ex;
     logic [1:0]  pc_src_ex, wb_src_ex;
+    logic        valid_ex;
 
     // A taken branch/jump resolves in EX one cycle before this register would
     // otherwise latch the two wrong-path instructions behind it - flush next cycle.
@@ -100,6 +104,7 @@ module cpu (
         .reg_write_en_in(reg_write_en_id), .alu_src_in(alu_src_id), .alu_a_src_in(alu_a_src_id),
         .alu_op_in(alu_op_id), .mem_write_in(mem_write_id), .mem_read_in(mem_read_id),
         .branch_in(branch_id), .pc_src_in(pc_src_id), .wb_src_in(wb_src_id),
+        .valid_in(valid_id),
 
         .pc_out(pc_ex), .pc_plus4_out(pc_plus4_ex),
         .rs1_data_out(rs1_data_ex), .rs2_data_out(rs2_data_ex), .imm_out(imm_ex),
@@ -107,7 +112,8 @@ module cpu (
         .funct3_out(funct3_ex),
         .reg_write_en_out(reg_write_en_ex), .alu_src_out(alu_src_ex), .alu_a_src_out(alu_a_src_ex),
         .alu_op_out(alu_op_ex), .mem_write_out(mem_write_ex), .mem_read_out(mem_read_ex),
-        .branch_out(branch_ex), .pc_src_out(pc_src_ex), .wb_src_out(wb_src_ex)
+        .branch_out(branch_ex), .pc_src_out(pc_src_ex), .wb_src_out(wb_src_ex),
+        .valid_out(valid_ex)
     );
 
     // Hazard detection (load-use)
@@ -180,18 +186,19 @@ module cpu (
     logic [2:0]  funct3_mem;
     logic        reg_write_en_mem, mem_write_mem, mem_read_mem;
     logic [1:0]  wb_src_mem;
+    logic        valid_mem;
 
     ex_mem_reg u_ex_mem (
         .clk(clk), .rst(rst),
         .alu_result_in(alu_result_ex), .rs2_data_in(rs2_data_ex_fwd), .pc_plus4_in(pc_plus4_ex),
         .rd_addr_in(rd_addr_ex), .funct3_in(funct3_ex),
         .reg_write_en_in(reg_write_en_ex), .mem_write_in(mem_write_ex), .mem_read_in(mem_read_ex),
-        .wb_src_in(wb_src_ex),
+        .wb_src_in(wb_src_ex), .valid_in(valid_ex),
 
         .alu_result_out(alu_result_mem), .rs2_data_out(rs2_data_mem), .pc_plus4_out(pc_plus4_mem),
         .rd_addr_out(rd_addr_mem), .funct3_out(funct3_mem),
         .reg_write_en_out(reg_write_en_mem), .mem_write_out(mem_write_mem), .mem_read_out(mem_read_mem),
-        .wb_src_out(wb_src_mem)
+        .wb_src_out(wb_src_mem), .valid_out(valid_mem)
     );
 
     // MEM stage
@@ -208,16 +215,17 @@ module cpu (
     logic [4:0]  rd_addr_wb;
     logic        reg_write_en_wb;
     logic [1:0]  wb_src_wb;
+    logic        valid_wb;
 
     mem_wb_reg u_mem_wb (
         .clk(clk), .rst(rst),
         .mem_read_data_in(mem_read_data_mem), .alu_result_in(alu_result_mem), .pc_plus4_in(pc_plus4_mem),
         .rd_addr_in(rd_addr_mem),
-        .reg_write_en_in(reg_write_en_mem), .wb_src_in(wb_src_mem),
+        .reg_write_en_in(reg_write_en_mem), .wb_src_in(wb_src_mem), .valid_in(valid_mem),
 
         .mem_read_data_out(mem_read_data_wb), .alu_result_out(alu_result_wb), .pc_plus4_out(pc_plus4_wb),
         .rd_addr_out(rd_addr_wb),
-        .reg_write_en_out(reg_write_en_wb), .wb_src_out(wb_src_wb)
+        .reg_write_en_out(reg_write_en_wb), .wb_src_out(wb_src_wb), .valid_out(valid_wb)
     );
 
     // WB stage
@@ -227,6 +235,25 @@ module cpu (
             2'b10:   write_back_data = pc_plus4_wb;      // jal / jalr return address
             default: write_back_data = alu_result_wb;    // r/i/lui/auipc
         endcase
+    end
+
+    // Performance counters
+    // instret only increments on a genuinely retired instruction (valid_wb),
+    // not on bubbles - a flushed/stalled slot reaching WB looks identical to
+    // a legitimately non-writing instruction (store, branch) unless the
+    // valid bit threaded through every pipeline register distinguishes them.
+    always_ff @(posedge clk) begin
+        if (rst) begin
+            perf_cycle_count   <= 32'd0;
+            perf_instr_retired <= 32'd0;
+            perf_stall_count   <= 32'd0;
+            perf_flush_count   <= 32'd0;
+        end else begin
+            perf_cycle_count   <= perf_cycle_count + 32'd1;
+            perf_instr_retired <= perf_instr_retired + (valid_wb ? 32'd1 : 32'd0);
+            perf_stall_count   <= perf_stall_count   + (load_use_stall ? 32'd1 : 32'd0);
+            perf_flush_count   <= perf_flush_count   + (ex_flush ? 32'd1 : 32'd0);
+        end
     end
 
 endmodule
