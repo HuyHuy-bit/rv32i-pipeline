@@ -1,13 +1,16 @@
 `default_nettype none
 
 // cpu.sv - top-level module: 5-stage pipelined RV32I CPU.
+
 module cpu (
     input  logic clk,
     input  logic rst,
     output logic [31:0] perf_cycle_count,
     output logic [31:0] perf_instr_retired,
     output logic [31:0] perf_stall_count,
-    output logic [31:0] perf_flush_count
+    output logic [31:0] perf_flush_count,
+    output logic [31:0] perf_mispredict_count,
+    output logic [31:0] perf_branch_count
 );
 
     // IF stage
@@ -18,27 +21,56 @@ module cpu (
 
     instr_mem u_instr_mem ( .addr(pc_out), .instr(instr_if) );
 
-    // control-flow resolution comes from EX (see below) - drives both the
-    // next-fetch PC and the flush signals for IF/ID + ID/EX.
-    logic        ex_flush;
-    logic [31:0] ex_resolved_target;
-    logic        load_use_stall; // driven by hazard_detect, declared below EX section
+    // Front-end branch prediction: index BHT+BTB with the fetch PC. On a
+    // predicted-taken hit we redirect the very next fetch to the cached
+    // target, so a correctly-predicted taken branch costs zero penalty.
+    logic        predict_taken_if;
+    logic [31:0] predict_target_if;
 
+    // resolution / redirect signals from EX (declared here, driven below)
+    logic        ex_flush;             // misprediction recovery this cycle
+    logic [31:0] ex_resolved_target;
+    logic        load_use_stall;       // driven by hazard_detect, below
+
+    // Predictor update port, driven from EX (declared here for the instance).
+    logic        bp_update_en;
+    logic [31:0] bp_update_pc;
+    logic        bp_update_taken;
+    logic [31:0] bp_update_target;
+
+    branch_predictor u_branch_predictor (
+        .clk(clk), .rst(rst),
+        .pc_predict(pc_out),
+        .predict_taken(predict_taken_if),
+        .predict_target(predict_target_if),
+        .update_en(bp_update_en),
+        .update_pc(bp_update_pc),
+        .update_taken(bp_update_taken),
+        .update_target(bp_update_target)
+    );
+
+    // Next-PC priority: EX misprediction recovery > load-use stall (hold) >
+    // front-end predicted-taken redirect > sequential.
     assign next_pc = ex_flush          ? ex_resolved_target
-                    : load_use_stall   ? pc_out            // hold: re-fetch same address
+                    : load_use_stall   ? pc_out               // hold: re-fetch same address
+                    : predict_taken_if ? predict_target_if    // speculative taken redirect
                     : pc_plus4_if;
 
     // IF/ID register
     logic [31:0] pc_id, pc_plus4_id, instr_id;
     logic        valid_id;
+    logic        predicted_taken_id;
+    logic [31:0] predicted_target_id;
 
     if_id_reg u_if_id (
         .clk(clk), .rst(rst),
         .flush(ex_flush),
         .stall(load_use_stall),
         .pc_in(pc_out), .pc_plus4_in(pc_plus4_if), .instr_in(instr_if),
+        .predicted_taken_in(predict_taken_if), .predicted_target_in(predict_target_if),
         .pc_out(pc_id), .pc_plus4_out(pc_plus4_id), .instr_out(instr_id),
-        .valid_out(valid_id)
+        .valid_out(valid_id),
+        .predicted_taken_out(predicted_taken_id), .predicted_target_out(predicted_target_id)
     );
 
     // ID stage
@@ -85,6 +117,8 @@ module cpu (
     logic [3:0]  alu_op_ex;
     logic [1:0]  pc_src_ex, wb_src_ex;
     logic        valid_ex;
+    logic        predicted_taken_ex;
+    logic [31:0] predicted_target_ex;
 
     // A taken branch/jump resolves in EX one cycle before this register would
     // otherwise latch the two wrong-path instructions behind it - flush next cycle.
@@ -103,6 +137,7 @@ module cpu (
         .alu_op_in(alu_op_id), .mem_write_in(mem_write_id), .mem_read_in(mem_read_id),
         .branch_in(branch_id), .pc_src_in(pc_src_id), .wb_src_in(wb_src_id),
         .valid_in(valid_id),
+        .predicted_taken_in(predicted_taken_id), .predicted_target_in(predicted_target_id),
 
         .pc_out(pc_ex), .pc_plus4_out(pc_plus4_ex),
         .rs1_data_out(rs1_data_ex), .rs2_data_out(rs2_data_ex), .imm_out(imm_ex),
@@ -111,7 +146,8 @@ module cpu (
         .reg_write_en_out(reg_write_en_ex), .alu_src_out(alu_src_ex), .alu_a_src_out(alu_a_src_ex),
         .alu_op_out(alu_op_ex), .mem_write_out(mem_write_ex), .mem_read_out(mem_read_ex),
         .branch_out(branch_ex), .pc_src_out(pc_src_ex), .wb_src_out(wb_src_ex),
-        .valid_out(valid_ex)
+        .valid_out(valid_ex),
+        .predicted_taken_out(predicted_taken_ex), .predicted_target_out(predicted_target_ex)
     );
 
     // Hazard detection (load-use)
@@ -168,15 +204,59 @@ module cpu (
     assign branch_target_ex = pc_ex + imm_ex;
     assign jalr_target_ex   = (rs1_data_ex_fwd + imm_ex) & ~32'd1;
 
+    // Resolve the actual control-flow outcome in EX.
     // pc_src_ex: 00=none(sequential), 01=conditional branch, 10=jalr, 11=jal
+    logic        actual_taken;      // did this instruction actually redirect?
+    logic [31:0] actual_target;     // ...and to where
+    logic        is_cf_instr;       // is this a control-flow instruction at all?
     always_comb begin
         case (pc_src_ex)
-            2'b01:   begin ex_flush = branch_taken_ex; ex_resolved_target = branch_target_ex; end
-            2'b10:   begin ex_flush = 1'b1;            ex_resolved_target = jalr_target_ex;   end
-            2'b11:   begin ex_flush = 1'b1;            ex_resolved_target = branch_target_ex; end
-            default: begin ex_flush = 1'b0;            ex_resolved_target = 32'd0;            end
+            2'b01:   begin actual_taken = branch_taken_ex; actual_target = branch_target_ex; is_cf_instr = 1'b1; end
+            2'b10:   begin actual_taken = 1'b1;            actual_target = jalr_target_ex;   is_cf_instr = 1'b1; end
+            2'b11:   begin actual_taken = 1'b1;            actual_target = branch_target_ex; is_cf_instr = 1'b1; end
+            default: begin actual_taken = 1'b0;            actual_target = 32'd0;            is_cf_instr = 1'b0; end
         endcase
     end
+
+    // The front end predicted a taken redirect to predicted_target_ex (only
+    // meaningful when predicted_taken_ex). We mispredicted if:
+    //   - actual outcome differs from predicted direction, OR
+    //   - both said taken but the cached target was wrong (stale BTB).
+    // On a misprediction we flush and redirect to the correct next PC:
+    //   taken   -> actual_target
+    //   not-taken (but predicted taken) -> the fall-through pc_ex + 4
+    logic        mispredict;
+    logic [31:0] correct_next_pc;
+    always_comb begin
+        if (actual_taken && predicted_taken_ex && (actual_target == predicted_target_ex)) begin
+            mispredict      = 1'b0;                 // correctly predicted taken to the right place
+            correct_next_pc = actual_target;
+        end else if (!actual_taken && !predicted_taken_ex) begin
+            mispredict      = 1'b0;                 // correctly predicted not-taken
+            correct_next_pc = pc_ex + 32'd4;
+        end else if (actual_taken) begin
+            mispredict      = 1'b1;                 // should have gone taken (or to a different target)
+            correct_next_pc = actual_target;
+        end else begin
+            mispredict      = 1'b1;                 // predicted taken but actually not-taken
+            correct_next_pc = pc_ex + 32'd4;
+        end
+    end
+
+    // Only valid instructions can mispredict (a bubble in EX must not flush).
+    // Special case: a non-control-flow instruction that the front end wrongly
+    // predicted taken (stale BTB alias) must also recover, back to pc_ex+4.
+    logic false_predict;
+    assign false_predict = valid_ex && !is_cf_instr && predicted_taken_ex;
+
+    assign ex_flush           = (valid_ex && is_cf_instr && mispredict) || false_predict;
+    assign ex_resolved_target = false_predict ? (pc_ex + 32'd4) : correct_next_pc;
+
+    // Predictor learning: update on every resolved control-flow instruction.
+    assign bp_update_en     = valid_ex && is_cf_instr;
+    assign bp_update_pc     = pc_ex;
+    assign bp_update_taken  = actual_taken;
+    assign bp_update_target = actual_target;
 
     // EX/MEM register
     logic [31:0] alu_result_mem, rs2_data_mem, pc_plus4_mem;
@@ -242,15 +322,19 @@ module cpu (
     // valid bit threaded through every pipeline register distinguishes them.
     always_ff @(posedge clk) begin
         if (rst) begin
-            perf_cycle_count   <= 32'd0;
-            perf_instr_retired <= 32'd0;
-            perf_stall_count   <= 32'd0;
-            perf_flush_count   <= 32'd0;
+            perf_cycle_count      <= 32'd0;
+            perf_instr_retired    <= 32'd0;
+            perf_stall_count      <= 32'd0;
+            perf_flush_count      <= 32'd0;
+            perf_mispredict_count <= 32'd0;
+            perf_branch_count     <= 32'd0;
         end else begin
-            perf_cycle_count   <= perf_cycle_count + 32'd1;
-            perf_instr_retired <= perf_instr_retired + (valid_wb ? 32'd1 : 32'd0);
-            perf_stall_count   <= perf_stall_count   + (load_use_stall ? 32'd1 : 32'd0);
-            perf_flush_count   <= perf_flush_count   + (ex_flush ? 32'd1 : 32'd0);
+            perf_cycle_count      <= perf_cycle_count + 32'd1;
+            perf_instr_retired    <= perf_instr_retired + (valid_wb ? 32'd1 : 32'd0);
+            perf_stall_count      <= perf_stall_count   + (load_use_stall ? 32'd1 : 32'd0);
+            perf_flush_count      <= perf_flush_count   + (ex_flush ? 32'd1 : 32'd0);
+            perf_mispredict_count <= perf_mispredict_count + ((ex_flush) ? 32'd1 : 32'd0);
+            perf_branch_count     <= perf_branch_count     + (bp_update_en ? 32'd1 : 32'd0);
         end
     end
 

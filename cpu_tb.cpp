@@ -113,12 +113,18 @@ int main(int argc, char** argv) {
     uint32_t instret = top->perf_instr_retired;
     uint32_t stalls   = top->perf_stall_count;
     uint32_t flushes  = top->perf_flush_count;
+    uint32_t mispred  = top->perf_mispredict_count;
+    uint32_t branches = top->perf_branch_count;
     double   cpi      = instret ? (double)cyc / (double)instret : 0.0;
+    double   acc      = branches ? 100.0 * (double)(branches - mispred) / (double)branches : 0.0;
     std::cout << "  perf: cycles=" << cyc
               << " instret=" << instret
               << " stalls=" << stalls
               << " flushes=" << flushes
               << " CPI=" << cpi << "\n";
+    std::cout << "  bpred: branches=" << branches
+              << " mispredicts=" << mispred
+              << " accuracy=" << acc << "%\n";
 
     return ok ? 0 : 1;
 }
