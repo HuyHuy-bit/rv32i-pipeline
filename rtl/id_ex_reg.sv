@@ -28,6 +28,8 @@ module id_ex_reg (
     input  logic [1:0]  pc_src_in,
     input  logic [1:0]  wb_src_in,
     input  logic        valid_in,
+    input  logic        predicted_taken_in,
+    input  logic [31:0] predicted_target_in,
 
     // outputs into EX
     output logic [31:0] pc_out,
@@ -49,7 +51,9 @@ module id_ex_reg (
     output logic        branch_out,
     output logic [1:0]  pc_src_out,
     output logic [1:0]  wb_src_out,
-    output logic        valid_out
+    output logic        valid_out,
+    output logic        predicted_taken_out,
+    output logic [31:0] predicted_target_out
 );
     always_ff @(posedge clk) begin
         if (rst || flush) begin
@@ -73,6 +77,8 @@ module id_ex_reg (
             pc_src_out       <= 2'b00;
             wb_src_out       <= 2'b00;
             valid_out        <= 1'b0;
+            predicted_taken_out  <= 1'b0;
+            predicted_target_out <= 32'd0;
         end else begin
             pc_out           <= pc_in;
             pc_plus4_out     <= pc_plus4_in;
@@ -93,6 +99,8 @@ module id_ex_reg (
             pc_src_out       <= pc_src_in;
             wb_src_out       <= wb_src_in;
             valid_out        <= valid_in;
+            predicted_taken_out  <= predicted_taken_in;
+            predicted_target_out <= predicted_target_in;
         end
     end
 endmodule
