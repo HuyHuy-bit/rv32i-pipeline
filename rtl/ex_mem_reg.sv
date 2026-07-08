@@ -4,6 +4,7 @@
 module ex_mem_reg (
     input  logic        clk,
     input  logic        rst,
+    input  logic        flush,   // squash the instruction in EX (e.g. trap in MEM)
 
     input  logic [31:0] alu_result_in,
     input  logic [31:0] rs2_data_in,     // store data (passes through EX unchanged)
@@ -16,6 +17,16 @@ module ex_mem_reg (
     input  logic        mem_read_in,
     input  logic [1:0]  wb_src_in,
     input  logic        valid_in,
+    input  logic [31:0] pc_in,          // this instruction's own PC (-> mepc)
+    input  logic        exc_pending_in, // an exception was detected for it
+    input  logic [31:0] exc_cause_in,
+    input  logic        is_csr_in,
+    input  logic        is_system_in,
+    input  logic [11:0] csr_addr_in,
+    input  logic [2:0]  csr_funct3_in,
+    input  logic [31:0] csr_wdata_in,
+    input  logic [31:0] csr_rdata_in,   // old CSR value (read in EX) -> WB
+    input  logic [31:0] instr_in,       // full instr (to distinguish MRET/ECALL/EBREAK)
 
     output logic [31:0] alu_result_out,
     output logic [31:0] rs2_data_out,
@@ -27,10 +38,20 @@ module ex_mem_reg (
     output logic        mem_write_out,
     output logic        mem_read_out,
     output logic [1:0]  wb_src_out,
-    output logic        valid_out
+    output logic        valid_out,
+    output logic [31:0] pc_out,
+    output logic        exc_pending_out,
+    output logic [31:0] exc_cause_out,
+    output logic        is_csr_out,
+    output logic        is_system_out,
+    output logic [11:0] csr_addr_out,
+    output logic [2:0]  csr_funct3_out,
+    output logic [31:0] csr_wdata_out,
+    output logic [31:0] csr_rdata_out,
+    output logic [31:0] instr_out
 );
     always_ff @(posedge clk) begin
-        if (rst) begin
+        if (rst || flush) begin
             alu_result_out   <= 32'd0;
             rs2_data_out     <= 32'd0;
             pc_plus4_out     <= 32'd0;
@@ -41,6 +62,16 @@ module ex_mem_reg (
             mem_read_out     <= 1'b0;
             wb_src_out       <= 2'b00;
             valid_out        <= 1'b0;
+            pc_out           <= 32'd0;
+            exc_pending_out  <= 1'b0;
+            exc_cause_out    <= 32'd0;
+            is_csr_out       <= 1'b0;
+            is_system_out    <= 1'b0;
+            csr_addr_out     <= 12'd0;
+            csr_funct3_out   <= 3'd0;
+            csr_wdata_out    <= 32'd0;
+            csr_rdata_out    <= 32'd0;
+            instr_out        <= 32'd0;
         end else begin
             alu_result_out   <= alu_result_in;
             rs2_data_out     <= rs2_data_in;
@@ -52,6 +83,16 @@ module ex_mem_reg (
             mem_read_out     <= mem_read_in;
             wb_src_out       <= wb_src_in;
             valid_out        <= valid_in;
+            pc_out           <= pc_in;
+            exc_pending_out  <= exc_pending_in;
+            exc_cause_out    <= exc_cause_in;
+            is_csr_out       <= is_csr_in;
+            is_system_out    <= is_system_in;
+            csr_addr_out     <= csr_addr_in;
+            csr_funct3_out   <= csr_funct3_in;
+            csr_wdata_out    <= csr_wdata_in;
+            csr_rdata_out    <= csr_rdata_in;
+            instr_out        <= instr_in;
         end
     end
 endmodule

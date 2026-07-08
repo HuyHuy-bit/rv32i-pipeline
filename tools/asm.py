@@ -27,6 +27,10 @@ def j_type(rd,off):
     return ((o>>20&1)<<31)|((o>>1&0x3FF)<<21)|((o>>11&1)<<20)|((o>>12&0xFF)<<12)|(r(rd)<<7)|0x6F
 
 def assemble(src):
+    CSRS={'mtvec':0x305,'mepc':0x341,'mcause':0x342}
+    def CSR_NUM(s):
+        s=s.strip().lower()
+        return CSRS[s] if s in CSRS else (int(s,0)&0xFFF)
     labels={}; instrs=[]; addr=0
     for line in src.splitlines():
         line=line.split('#')[0].strip()
@@ -86,7 +90,18 @@ def assemble(src):
         elif op=='auipc': words.append(u_type(p[1],iv(p[2]),0x17))
         elif op=='jal':   words.append(j_type(p[1],iv(p[2])))
         elif op=='nop':   words.append(0x00000013)
+        elif op=='halt':  words.append(0x0000006F)  # jal x0, 0 -> infinite self-loop
         elif op=='ret':   words.append(i_type('x0','x1',0,0,0x67))
+        elif op=='ecall':  words.append(0x00000073)
+        elif op=='ebreak': words.append(0x00100073)
+        elif op=='mret':   words.append(0x30200073)
+        elif op=='word':   words.append(int(p[1],0) & 0xFFFFFFFF)   # raw 32-bit word
+        elif op in ('csrrw','csrrs','csrrc'):
+            f3={'csrrw':1,'csrrs':2,'csrrc':3}[op]
+            words.append((CSR_NUM(p[2])<<20)|(r(p[3])<<15)|(f3<<12)|(r(p[1])<<7)|0x73)
+        elif op in ('csrrwi','csrrsi','csrrci'):
+            f3={'csrrwi':5,'csrrsi':6,'csrrci':7}[op]
+            words.append((CSR_NUM(p[2])<<20)|((int(p[3],0)&0x1F)<<15)|(f3<<12)|(r(p[1])<<7)|0x73)
         else: raise ValueError(f"Unknown op '{op}' at PC=0x{pc:x}")
     return words
 

@@ -11,6 +11,5 @@ addi x7, x0, 200
 sw   x7, 8(x0)
 lw   x8, 8(x0)
 add  x8, x8, x6
-nop
-nop
-nop
+
+halt

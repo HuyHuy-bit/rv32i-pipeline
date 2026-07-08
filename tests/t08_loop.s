@@ -9,8 +9,5 @@ loop:
     bne  x1, x0, loop  # if counter != 0, loop back
 
 addi x7, x0, 42       # sentinel: reached after loop exit
-nop
-nop
-nop
-nop
-nop
+
+halt

@@ -15,7 +15,10 @@ module control (
     output var logic [3:0] alu_op,        // 4-bit ALU operation code
     output var logic [1:0] pc_src,        // program counter source selector
     output var logic [1:0] wb_src,        // write-back source selector
-    output var logic       alu_a_src      // ALU operand A source (0=rs1, 1=pc)
+    output var logic       alu_a_src,     // ALU operand A source (0=rs1, 1=pc)
+    output var logic       is_csr,        // 1 = CSR read/write instruction
+    output var logic       is_system,     // 1 = privileged SYSTEM op (ECALL/EBREAK/MRET)
+    output var logic       illegal        // 1 = unrecognized/illegal instruction
 );
     // Intermediate ALU decode mode - collapses the opcode-level decision
     // (add / sub / funct-driven / lui) so the funct3/funct7 decode below
@@ -32,6 +35,9 @@ module control (
         wb_src          = 2'b00;
         pc_src          = 2'b00;
         alu_a_src       = 1'b0;
+        is_csr          = 1'b0;
+        is_system       = 1'b0;
+        illegal         = 1'b0;
         alu_decode_mode = ALU_ADD;
 
         case (opcode)
@@ -87,9 +93,22 @@ module control (
                 alu_a_src       = 1'b1;
                 alu_decode_mode = ALU_ADD;
             end
+            OPCODE_SYSTEM: begin
+                if (funct3 == F3_PRIV) begin
+                    // ECALL / EBREAK / MRET - no register write, no ALU use.
+                    is_system = 1'b1;
+                end else begin
+                    // CSRRW/S/C and immediate forms: read old CSR into rd.
+                    is_csr       = 1'b1;
+                    reg_write_en = 1'b1;
+                    wb_src       = 2'b11;   // new WB source: CSR read data
+                end
+            end
             default: begin
-                // all signals already defaulted above -> NOP
-                alu_decode_mode = ALU_ADD;
+                // Unrecognized opcode -> illegal-instruction trap. No arch
+                // state is written (all control signals stay at their safe
+                // defaults); the trap is raised at the commit point.
+                illegal = 1'b1;
             end
         endcase
     end

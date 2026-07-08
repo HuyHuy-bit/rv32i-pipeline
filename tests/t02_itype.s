@@ -14,4 +14,5 @@ slli  x9,  x1, 2       # 12<<2=48
 srli  x10, x1, 2       # 12>>2=3  (logical)
 addi  x21, x0, -12     # x21=-12=0xFFFFFFF4
 srai  x11, x21, 2      # -12>>2=-3=0xFFFFFFFD (arithmetic)
-nop
+
+halt                  # park here so we never fetch past the program

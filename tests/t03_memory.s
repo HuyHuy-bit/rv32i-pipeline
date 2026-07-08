@@ -22,4 +22,5 @@ lbu  x8,  8(x0)        # x8 = zero-ext(0xFF)   = 255
 addi x9,  x0, 100
 sw   x9,  12(x0)
 lw   x10, 12(x0)       # x10 = 100
-nop
+
+halt

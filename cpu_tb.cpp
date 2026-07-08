@@ -73,7 +73,27 @@ int main(int argc, char** argv) {
     };
 
     top->rst = 1; tick(); top->rst = 0;
-    for (int i = 0; i < cycles; i++) tick();
+
+    // Run until the PC "parks" — i.e. the same PC is fetched several cycles in
+    // a row, which is what a halt self-loop (j .) looks like. This replaces the
+    // old fixed +CYCLES model and its fragile per-test cycle budgets: programs
+    // now end deliberately in a halt loop, and we detect that. A generous
+    // timeout still guards against a genuine hang.
+    const int timeout = (cycles > 0 ? cycles : 20) * 50 + 1000;
+    uint32_t prev_pc = 0xFFFFFFFF;
+    int      same_pc = 0;
+    int      ran     = 0;
+    for (int i = 0; i < timeout; i++) {
+        tick();
+        ran++;
+        uint32_t cur_pc = top->rootp->cpu__DOT__pc_out;
+        if (cur_pc == prev_pc) {
+            if (++same_pc >= 6) break;   // parked in a self-loop
+        } else {
+            same_pc = 0;
+        }
+        prev_pc = cur_pc;
+    }
 
     tfp->close();
 
@@ -83,7 +103,7 @@ int main(int argc, char** argv) {
         regs[i] = top->rootp->cpu__DOT__u_reg_file__DOT__reg_array[i];
 
     // Print register snapshot (non-zero registers only).
-    std::cout << "Registers after " << cycles << " cycles:\n";
+    std::cout << "Registers after " << ran << " cycles (ran until PC parked):\n";
     for (int i = 0; i < 32; i++)
         if (regs[i])
             std::cout << "  x" << i << " = " << regs[i]

@@ -42,4 +42,5 @@ addi x6,  x0, 1        # POISON
 bgeu_t:
 
 addi x7, x0, 99        # success marker
-nop
+
+halt

@@ -14,4 +14,5 @@ lui   x3, 0xFFFFF
 auipc x4, 0
 auipc x5, 1
 sub   x6, x5, x4
-nop
+
+halt

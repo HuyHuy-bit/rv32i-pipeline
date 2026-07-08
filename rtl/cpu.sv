@@ -1,7 +1,6 @@
 `default_nettype none
 
 // cpu.sv - top-level module: 5-stage pipelined RV32I CPU.
-
 module cpu (
     input  logic clk,
     input  logic rst,
@@ -49,9 +48,14 @@ module cpu (
         .update_target(bp_update_target)
     );
 
-    // Next-PC priority: EX misprediction recovery > load-use stall (hold) >
-    // front-end predicted-taken redirect > sequential.
-    assign next_pc = ex_flush          ? ex_resolved_target
+    // Trap/MRET redirect signals (driven at the commit point in MEM, below).
+    logic        trap_redirect;
+    logic [31:0] trap_target;
+
+    // Next-PC priority: trap/MRET (commit point) > EX misprediction recovery >
+    // load-use stall (hold) > front-end predicted-taken redirect > sequential.
+    assign next_pc = trap_redirect     ? trap_target
+                    : ex_flush          ? ex_resolved_target
                     : load_use_stall   ? pc_out               // hold: re-fetch same address
                     : predict_taken_if ? predict_target_if    // speculative taken redirect
                     : pc_plus4_if;
@@ -64,7 +68,7 @@ module cpu (
 
     if_id_reg u_if_id (
         .clk(clk), .rst(rst),
-        .flush(ex_flush),
+        .flush(ex_flush || trap_redirect),
         .stall(load_use_stall),
         .pc_in(pc_out), .pc_plus4_in(pc_plus4_if), .instr_in(instr_if),
         .predicted_taken_in(predict_taken_if), .predicted_target_in(predict_target_if),
@@ -87,14 +91,24 @@ module cpu (
     logic        reg_write_en_id, alu_src_id, mem_write_id, mem_read_id, branch_id, alu_a_src_id;
     logic [3:0]  alu_op_id;
     logic [1:0]  pc_src_id, wb_src_id;
+    logic        is_csr_id, is_system_id, illegal_id;
 
     control u_control (
         .opcode(opcode_id), .funct3(funct3_id), .funct7(funct7_id),
         .reg_write_en(reg_write_en_id), .alu_src(alu_src_id),
         .mem_write(mem_write_id), .mem_read(mem_read_id),
         .branch(branch_id), .pc_src(pc_src_id), .wb_src(wb_src_id),
-        .alu_a_src(alu_a_src_id), .alu_op(alu_op_id)
+        .alu_a_src(alu_a_src_id), .alu_op(alu_op_id),
+        .is_csr(is_csr_id), .is_system(is_system_id), .illegal(illegal_id)
     );
+
+    // CSR instruction operand fields (decoded in ID, used at commit in MEM).
+    // CSRRWI/CSRRSI/CSRRCI (funct3[2]==1) use a zero-extended 5-bit uimm from
+    // the rs1 field instead of a register value.
+    logic [11:0] csr_addr_id;
+    logic [31:0] csr_wdata_id;
+    assign csr_addr_id  = instr_id[31:20];
+    assign csr_wdata_id = funct3_id[2] ? {27'd0, rs1_addr_id} : reg_rs1_data_id;
 
     logic [31:0] reg_rs1_data_id, reg_rs2_data_id;
     logic [31:0] write_back_data; // driven by WB stage, below
@@ -119,13 +133,18 @@ module cpu (
     logic        valid_ex;
     logic        predicted_taken_ex;
     logic [31:0] predicted_target_ex;
+    logic        is_csr_ex, is_system_ex, illegal_ex;
+    logic [31:0] csr_rdata_ex;   // old CSR value, read combinationally in EX
+    logic [11:0] csr_addr_ex;
+    logic [31:0] csr_wdata_ex;
+    logic [31:0] instr_ex;
 
     // A taken branch/jump resolves in EX one cycle before this register would
     // otherwise latch the two wrong-path instructions behind it - flush next cycle.
     // A load-use hazard inserts a bubble here too, while IF/ID holds so the
     // stalled instruction re-decodes correctly next cycle.
     logic id_ex_flush;
-    assign id_ex_flush = ex_flush || load_use_stall;
+    assign id_ex_flush = ex_flush || load_use_stall || trap_redirect;
 
     id_ex_reg u_id_ex (
         .clk(clk), .rst(rst), .flush(id_ex_flush),
@@ -138,6 +157,8 @@ module cpu (
         .branch_in(branch_id), .pc_src_in(pc_src_id), .wb_src_in(wb_src_id),
         .valid_in(valid_id),
         .predicted_taken_in(predicted_taken_id), .predicted_target_in(predicted_target_id),
+        .is_csr_in(is_csr_id), .is_system_in(is_system_id), .illegal_in(illegal_id),
+        .csr_addr_in(csr_addr_id), .csr_wdata_in(csr_wdata_id), .instr_in(instr_id),
 
         .pc_out(pc_ex), .pc_plus4_out(pc_plus4_ex),
         .rs1_data_out(rs1_data_ex), .rs2_data_out(rs2_data_ex), .imm_out(imm_ex),
@@ -147,7 +168,9 @@ module cpu (
         .alu_op_out(alu_op_ex), .mem_write_out(mem_write_ex), .mem_read_out(mem_read_ex),
         .branch_out(branch_ex), .pc_src_out(pc_src_ex), .wb_src_out(wb_src_ex),
         .valid_out(valid_ex),
-        .predicted_taken_out(predicted_taken_ex), .predicted_target_out(predicted_target_ex)
+        .predicted_taken_out(predicted_taken_ex), .predicted_target_out(predicted_target_ex),
+        .is_csr_out(is_csr_ex), .is_system_out(is_system_ex), .illegal_out(illegal_ex),
+        .csr_addr_out(csr_addr_ex), .csr_wdata_out(csr_wdata_ex), .instr_out(instr_ex)
     );
 
     // Hazard detection (load-use)
@@ -258,6 +281,27 @@ module cpu (
     assign bp_update_taken  = actual_taken;
     assign bp_update_target = actual_target;
 
+    // ---- EX-stage exception detection (Part 1: illegal instruction) ----
+    // Detected here, but not acted on until the commit point in MEM, so that
+    // exceptions resolve in program order (precise). Part 2 adds misaligned
+    // load/store here as well.
+    logic        exc_pending_ex;
+    logic [31:0] exc_cause_ex;
+    always_comb begin
+        exc_pending_ex = 1'b0;
+        exc_cause_ex   = 32'd0;
+        if (valid_ex && illegal_ex) begin
+            exc_pending_ex = 1'b1;
+            exc_cause_ex   = CAUSE_ILLEGAL_INSTR;
+        end
+    end
+
+    // ---- CSR read happens at the commit point (MEM), not here ----
+    // For a CSR instruction, the old value read from the CSR is produced by the
+    // csr module at commit and routed straight into write-back; nothing to do
+    // in EX. csr_rdata_ex is carried as 0 (unused) to keep the pipe regs simple.
+    assign csr_rdata_ex = 32'd0;
+
     // EX/MEM register
     logic [31:0] alu_result_mem, rs2_data_mem, pc_plus4_mem;
     logic [4:0]  rd_addr_mem;
@@ -265,18 +309,35 @@ module cpu (
     logic        reg_write_en_mem, mem_write_mem, mem_read_mem;
     logic [1:0]  wb_src_mem;
     logic        valid_mem;
+    logic [31:0] pc_mem;
+    logic        exc_pending_mem;
+    logic [31:0] exc_cause_mem;
+    logic        is_csr_mem, is_system_mem;
+    logic [11:0] csr_addr_mem;
+    logic [2:0]  csr_funct3_mem;
+    logic [31:0] csr_wdata_mem, csr_rdata_mem;
+    logic [31:0] instr_mem_r;
 
     ex_mem_reg u_ex_mem (
         .clk(clk), .rst(rst),
+        .flush(trap_redirect),
         .alu_result_in(alu_result_ex), .rs2_data_in(rs2_data_ex_fwd), .pc_plus4_in(pc_plus4_ex),
         .rd_addr_in(rd_addr_ex), .funct3_in(funct3_ex),
         .reg_write_en_in(reg_write_en_ex), .mem_write_in(mem_write_ex), .mem_read_in(mem_read_ex),
         .wb_src_in(wb_src_ex), .valid_in(valid_ex),
+        .pc_in(pc_ex), .exc_pending_in(exc_pending_ex), .exc_cause_in(exc_cause_ex),
+        .is_csr_in(is_csr_ex), .is_system_in(is_system_ex),
+        .csr_addr_in(csr_addr_ex), .csr_funct3_in(funct3_ex),
+        .csr_wdata_in(csr_wdata_ex), .csr_rdata_in(csr_rdata_ex), .instr_in(instr_ex),
 
         .alu_result_out(alu_result_mem), .rs2_data_out(rs2_data_mem), .pc_plus4_out(pc_plus4_mem),
         .rd_addr_out(rd_addr_mem), .funct3_out(funct3_mem),
         .reg_write_en_out(reg_write_en_mem), .mem_write_out(mem_write_mem), .mem_read_out(mem_read_mem),
-        .wb_src_out(wb_src_mem), .valid_out(valid_mem)
+        .wb_src_out(wb_src_mem), .valid_out(valid_mem),
+        .pc_out(pc_mem), .exc_pending_out(exc_pending_mem), .exc_cause_out(exc_cause_mem),
+        .is_csr_out(is_csr_mem), .is_system_out(is_system_mem),
+        .csr_addr_out(csr_addr_mem), .csr_funct3_out(csr_funct3_mem),
+        .csr_wdata_out(csr_wdata_mem), .csr_rdata_out(csr_rdata_mem), .instr_out(instr_mem_r)
     );
 
     // MEM stage
@@ -288,6 +349,72 @@ module cpu (
         .read_data(mem_read_data_mem)
     );
 
+    // ---- Commit point: traps, MRET, and CSR writes all resolve here ----
+    // This is the single point where control-flow-changing exceptional events
+    // are decided, in program order. An instruction reaching MEM is the oldest
+    // in-flight non-retired instruction, so acting here gives precise
+    // exceptions for free: everything ahead has committed, everything behind
+    // gets flushed.
+    logic        trap_take;       // a trap fires this cycle
+    logic [31:0] trap_cause_w;
+    logic        mret_take;       // an MRET commits this cycle
+    logic        csr_commit;      // a CSR instruction commits its write this cycle
+
+    logic is_mret_mem, is_ecall_mem, is_ebreak_mem;
+    assign is_mret_mem   = is_system_mem && (instr_mem_r == INSTR_MRET);
+    assign is_ecall_mem  = is_system_mem && (instr_mem_r == INSTR_ECALL);
+    assign is_ebreak_mem = is_system_mem && (instr_mem_r == INSTR_EBREAK);
+
+    always_comb begin
+        trap_take    = 1'b0;
+        trap_cause_w = 32'd0;
+        mret_take    = 1'b0;
+        csr_commit   = 1'b0;
+
+        if (valid_mem) begin
+            if (exc_pending_mem) begin
+                trap_take    = 1'b1;               // illegal instruction (Part 1)
+                trap_cause_w = exc_cause_mem;
+            end else if (is_ecall_mem) begin
+                trap_take    = 1'b1;
+                trap_cause_w = CAUSE_ECALL_M;
+            end else if (is_ebreak_mem) begin
+                trap_take    = 1'b1;
+                trap_cause_w = CAUSE_BREAKPOINT;
+            end else if (is_mret_mem) begin
+                mret_take    = 1'b1;
+            end else if (is_csr_mem) begin
+                csr_commit   = 1'b1;
+            end
+        end
+    end
+
+    logic [31:0] mtvec_val, mepc_val, csr_rdata_commit;
+    csr u_csr (
+        .clk(clk), .rst(rst),
+        .csr_access(csr_commit),
+        .csr_addr(csr_addr_mem),
+        .csr_funct3(csr_funct3_mem),
+        .csr_wdata(csr_wdata_mem),
+        .csr_rdata(csr_rdata_commit),   // old CSR value -> write-back to rd
+        .trap_en(trap_take),
+        .trap_pc(pc_mem),
+        .trap_cause(trap_cause_w),
+        .mtvec_out(mtvec_val),
+        .mret_en(mret_take),
+        .mepc_out(mepc_val)
+    );
+
+    // Trap/MRET redirect target computed here; signals declared near IF.
+    assign trap_redirect = trap_take || mret_take;
+    assign trap_target   = trap_take ? mtvec_val : mepc_val;
+
+    // For a committing CSR instruction, the value written back to rd is the
+    // OLD csr value. We fold it into the MEM-stage alu_result feeding MEM/WB,
+    // since a CSR instruction doesn't use the ALU result for anything else.
+    logic [31:0] mem_result_for_wb;
+    assign mem_result_for_wb = is_csr_mem ? csr_rdata_commit : alu_result_mem;
+
     // MEM/WB register
     logic [31:0] mem_read_data_wb, alu_result_wb, pc_plus4_wb;
     logic [4:0]  rd_addr_wb;
@@ -295,11 +422,17 @@ module cpu (
     logic [1:0]  wb_src_wb;
     logic        valid_wb;
 
+    // A trapping instruction must not commit its register write. Gate the
+    // reg_write_en flowing into MEM/WB: on a trap, the offending instruction
+    // writes no architectural register (only mepc/mcause change).
+    logic reg_write_en_mem_gated;
+    assign reg_write_en_mem_gated = reg_write_en_mem && !(trap_take);
+
     mem_wb_reg u_mem_wb (
         .clk(clk), .rst(rst),
-        .mem_read_data_in(mem_read_data_mem), .alu_result_in(alu_result_mem), .pc_plus4_in(pc_plus4_mem),
+        .mem_read_data_in(mem_read_data_mem), .alu_result_in(mem_result_for_wb), .pc_plus4_in(pc_plus4_mem),
         .rd_addr_in(rd_addr_mem),
-        .reg_write_en_in(reg_write_en_mem), .wb_src_in(wb_src_mem), .valid_in(valid_mem),
+        .reg_write_en_in(reg_write_en_mem_gated), .wb_src_in(wb_src_mem), .valid_in(valid_mem),
 
         .mem_read_data_out(mem_read_data_wb), .alu_result_out(alu_result_wb), .pc_plus4_out(pc_plus4_wb),
         .rd_addr_out(rd_addr_wb),

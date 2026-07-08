@@ -24,4 +24,5 @@ jalr  x5,  x4, 0
 addi  x6,  x0, 99
 jalr_t:
 addi  x7,  x0, 77
-nop
+
+halt

@@ -30,6 +30,12 @@ module id_ex_reg (
     input  logic        valid_in,
     input  logic        predicted_taken_in,
     input  logic [31:0] predicted_target_in,
+    input  logic        is_csr_in,
+    input  logic        is_system_in,
+    input  logic        illegal_in,
+    input  logic [11:0] csr_addr_in,
+    input  logic [31:0] csr_wdata_in,
+    input  logic [31:0] instr_in,
 
     // outputs into EX
     output logic [31:0] pc_out,
@@ -53,7 +59,13 @@ module id_ex_reg (
     output logic [1:0]  wb_src_out,
     output logic        valid_out,
     output logic        predicted_taken_out,
-    output logic [31:0] predicted_target_out
+    output logic [31:0] predicted_target_out,
+    output logic        is_csr_out,
+    output logic        is_system_out,
+    output logic        illegal_out,
+    output logic [11:0] csr_addr_out,
+    output logic [31:0] csr_wdata_out,
+    output logic [31:0] instr_out
 );
     always_ff @(posedge clk) begin
         if (rst || flush) begin
@@ -79,6 +91,12 @@ module id_ex_reg (
             valid_out        <= 1'b0;
             predicted_taken_out  <= 1'b0;
             predicted_target_out <= 32'd0;
+            is_csr_out           <= 1'b0;
+            is_system_out        <= 1'b0;
+            illegal_out          <= 1'b0;
+            csr_addr_out         <= 12'd0;
+            csr_wdata_out        <= 32'd0;
+            instr_out            <= 32'd0;
         end else begin
             pc_out           <= pc_in;
             pc_plus4_out     <= pc_plus4_in;
@@ -101,6 +119,12 @@ module id_ex_reg (
             valid_out        <= valid_in;
             predicted_taken_out  <= predicted_taken_in;
             predicted_target_out <= predicted_target_in;
+            is_csr_out           <= is_csr_in;
+            is_system_out        <= is_system_in;
+            illegal_out          <= illegal_in;
+            csr_addr_out         <= csr_addr_in;
+            csr_wdata_out        <= csr_wdata_in;
+            instr_out            <= instr_in;
         end
     end
 endmodule
