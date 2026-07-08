@@ -3,12 +3,6 @@
 files, one for instr_mem (code) and one for data_mem (data/signature).
 
 Usage: elf2hex.py <elf> <instr_hex_out> <data_hex_out>
-
-Relies on the rv32i-pipeline.ld layout: code lives in ROM at ELF address
-0x00000000, data lives in RAM at ELF address 0x00010000. Both physical
-memories only decode the low 16 bits of address, so RAM's 0x10000 base
-aliases to word 0 of data_mem - the extracted .data binary is written
-starting at hex-file line 0, no @address directive needed.
 """
 import subprocess
 import sys
@@ -24,7 +18,6 @@ def objcopy_binary(elf, sections, out_bin):
 def bin_to_hex_words(bin_path, hex_path, max_words):
     with open(bin_path, "rb") as f:
         data = f.read()
-    # pad to a multiple of 4 bytes
     if len(data) % 4:
         data += b"\x00" * (4 - len(data) % 4)
     words = [struct.unpack("<I", data[i:i+4])[0] for i in range(0, len(data), 4)]
@@ -45,7 +38,7 @@ def main():
     objcopy_binary(elf, [".text.init", ".text", ".rodata"], "/tmp/_text.bin")
     objcopy_binary(elf, [".data"], "/tmp/_data.bin")
 
-    n_instr = bin_to_hex_words("/tmp/_text.bin", instr_hex, 16384)
+    n_instr = bin_to_hex_words("/tmp/_text.bin", instr_hex, 524288)
     n_data  = bin_to_hex_words("/tmp/_data.bin", data_hex, 16384)
 
     print(f"instr_mem: {n_instr} words -> {instr_hex}")
