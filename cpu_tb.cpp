@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -27,8 +28,6 @@ static int intarg(int argc, char** argv, const char* pfx, int def) {
 }
 
 // ---- ref-file loader ---------------------------------------------------
-// Format: lines of  xN=VALUE  where VALUE is decimal or 0x hex.
-// A leading "cycles=N" line is skipped here (Makefile reads it instead).
 static std::map<int,uint32_t> load_ref(const std::string& path) {
     std::map<int,uint32_t> exp;
     if (path.empty()) return exp;
@@ -74,11 +73,6 @@ int main(int argc, char** argv) {
 
     top->rst = 1; tick(); top->rst = 0;
 
-    // Run until the PC "parks" — i.e. the same PC is fetched several cycles in
-    // a row, which is what a halt self-loop (j .) looks like. This replaces the
-    // old fixed +CYCLES model and its fragile per-test cycle budgets: programs
-    // now end deliberately in a halt loop, and we detect that. A generous
-    // timeout still guards against a genuine hang.
     const int timeout = (cycles > 0 ? cycles : 20) * 50 + 1000;
     uint32_t prev_pc = 0xFFFFFFFF;
     int      same_pc = 0;
@@ -96,6 +90,19 @@ int main(int argc, char** argv) {
     }
 
     tfp->close();
+
+    std::string sigfile = strarg(argc, argv, "+SIGFILE=", "");
+    if (!sigfile.empty()) {
+        int sigstart = intarg(argc, argv, "+SIGSTART=", 0);
+        int sigend   = intarg(argc, argv, "+SIGEND=", 0);
+        std::ofstream sf(sigfile);
+        for (int i = sigstart; i < sigend; i++) {
+            uint32_t w = top->rootp->cpu__DOT__u_data_mem__DOT__mem_array[i];
+            sf << std::hex << std::setw(8) << std::setfill('0') << w << "\n";
+        }
+        sf.close();
+        std::cout << "Signature dumped: " << (sigend - sigstart) << " words -> " << sigfile << "\n";
+    }
 
     // Read all 32 registers from Verilator's flattened model root.
     uint32_t regs[32] = {};

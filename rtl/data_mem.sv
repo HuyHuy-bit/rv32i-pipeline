@@ -12,6 +12,13 @@ module data_mem (
     // Word-addressed array; subword access handled via per-byte write strobes.
     logic [31:0] mem_array [0:16383];
 
+    string data_file;
+    initial begin
+        if ($value$plusargs("DATAFILE=%s", data_file)) begin
+            $readmemh(data_file, mem_array);
+        end
+    end
+
     // funct3 size encodings (low 2 bits = width; bit2 = unsigned for loads)
     localparam [2:0] F3_B  = 3'b000; // lb  / sb
     localparam [2:0] F3_H  = 3'b001; // lh  / sh
